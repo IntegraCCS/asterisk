@@ -3,6 +3,8 @@
         By Mark Spencer <markster@digium.com> and the Asterisk.org developer community.
         Copyright (C) 2001-2019 Digium, Inc. and other copyright holders.
 ```
+![Sync Fork](https://github.com/IntegraCCS/asterisk/workflows/Sync%20Fork/badge.svg)
+
 ## SECURITY
 
   It is imperative that you read and fully understand the contents of
