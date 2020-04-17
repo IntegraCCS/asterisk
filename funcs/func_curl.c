@@ -724,6 +724,7 @@ static int acf_curl_helper(struct ast_channel *chan, const char *cmd, char *info
 
 	if (store) {
 		AST_LIST_UNLOCK(list);
+		AST_LIST_HEAD_INIT(list);
 	}
 	curl_slist_free_all(headers);
 
