@@ -483,6 +483,24 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision$")
 			<ref type="function">QUEUE_MEMBER_PENALTY</ref>
 		</see-also>
 	</application>
+	<application name="QueueUpdate" language="en_US">
+		<synopsis>
+			Writes to the queue_log file for OutBound calls and updates Realtime Data.
+            Is used at h extension to be able to have all the parameters.
+		</synopsis>
+		<syntax>
+			<parameter name="queuename" required="true" />
+			<parameter name="uniqueid" required="true" />
+			<parameter name="agent" required="true" />
+			<parameter name="status" required="true" />
+            <parameter name="talktime" required="true" />
+            <parameter name="params" required="false" />
+		</syntax>
+		<description>
+			<para>Allows you to write Outbound events into the queue log.</para>
+			<para>Example: exten => h,1,QueueUpdate(${QUEUE}, ${UNIQUEID}, ${AGENT}, ${DIALSTATUS}, ${ANSWEREDTIME}, ${DIALEDTIME} | ${DIALEDNUMBER})</para>
+		</description>
+	</application>
 	<function name="QUEUE_VARIABLES" language="en_US">
 		<synopsis>
 			Return Queue information in variables.
@@ -1359,6 +1377,8 @@ static char *app_upqm = "UnpauseQueueMember" ;
 
 static char *app_ql = "QueueLog" ;
 
+static char *app_qupd = "QueueUpdate";
+
 /*! \brief Persistent Members astdb family */
 static const char * const pm_family = "Queue/PersistentMembers";
 
@@ -1625,6 +1645,7 @@ struct call_queue {
 	int talktime;                       /*!< Current avg talktime, based on the same exponential average */
 	int callscompleted;                 /*!< Number of queue calls completed */
 	int callsabandoned;                 /*!< Number of queue calls abandoned */
+	int callsabandonedinsl;             /*!< Number of queue calls abandoned in servicelevel */
 	int servicelevel;                   /*!< seconds setting for servicelevel*/
 	int callscompletedinsl;             /*!< Number of calls answered with servicelevel*/
 	char monfmt[8];                     /*!< Format to use when recording calls */
@@ -2761,6 +2782,7 @@ static void clear_queue(struct call_queue *q)
 	q->callscompleted = 0;
 	q->callsabandoned = 0;
 	q->callscompletedinsl = 0;
+	q->callsabandonedinsl = 0;
 	q->talktime = 0;
 
 	if (q->members) {
@@ -4621,6 +4643,10 @@ static int say_periodic_announcement(struct queue_ent *qe, int ringing)
 /*! \brief Record that a caller gave up on waiting in queue */
 static void record_abandoned(struct queue_ent *qe)
 {
+
+	int callabandonedinsl = 0;
+	time_t now;
+
 	RAII_VAR(struct ast_json *, blob, NULL, ast_json_unref);
 
 	pbx_builtin_setvar_helper(qe->chan, "ABANDONED", "TRUE");
@@ -4633,6 +4659,13 @@ static void record_abandoned(struct queue_ent *qe)
 			     "OriginalPosition", qe->opos,
 			     "HoldTime", (int)(time(NULL) - qe->start));
 
+
+	time(&now);
+	callabandonedinsl = ((now - qe->start) <= qe->parent->servicelevel);
+	if(callabandonedinsl) {
+		qe->parent->callsabandonedinsl++;
+	}
+		
 	qe->parent->callsabandoned++;
 	ao2_unlock(qe->parent);
 
@@ -9230,6 +9263,8 @@ static char *__queues_show(struct mansession *s, int fd, int argc, const char * 
 	queue_iter = ao2_iterator_init(queues, AO2_ITERATOR_DONTLOCK);
 	while ((q = ao2_t_iterator_next(&queue_iter, "Iterate through queues"))) {
 		float sl;
+		float sl2;
+
 		struct call_queue *realtime_queue = NULL;
 
 		ao2_lock(q);
@@ -9262,12 +9297,16 @@ static char *__queues_show(struct mansession *s, int fd, int argc, const char * 
 			ast_str_append(&out, 0, "unlimited");
 		}
 		sl = 0;
+		sl2 = 0;
 		if (q->callscompleted > 0) {
 			sl = 100 * ((float) q->callscompletedinsl / (float) q->callscompleted);
 		}
-		ast_str_append(&out, 0, ") in '%s' strategy (%ds holdtime, %ds talktime), W:%d, C:%d, A:%d, SL:%2.1f%% within %ds",
-			int2strat(q->strategy), q->holdtime, q->talktime, q->weight,
-			q->callscompleted, q->callsabandoned,sl,q->servicelevel);
+		if (q->callscompleted + q->callsabandoned > 0) {
+			sl2 =100 * (((float)q->callsabandonedinsl + (float)q->callscompletedinsl) / ((float)q->callsabandoned + (float)q->callscompleted));
+		}
+
+		ast_str_append(&out, 0, ") in '%s' strategy (%ds holdtime, %ds talktime), W:%d, C:%d, A:%d, SL:%2.1f%%, SL2:%2.1f%% within %ds",
+			int2strat(q->strategy), q->holdtime, q->talktime, q->weight, q->callscompleted, q->callsabandoned, sl, sl2, q->servicelevel);
 		do_print(s, fd, ast_str_buffer(out));
 		if (!ao2_container_count(q->members)) {
 			do_print(s, fd, "   No Members");
@@ -9615,6 +9654,7 @@ static int manager_queues_status(struct mansession *s, const struct message *m)
 	struct call_queue *q;
 	struct queue_ent *qe;
 	float sl = 0;
+	float sl2 = 0;
 	struct member *mem;
 	struct ao2_iterator queue_iter;
 	struct ao2_iterator mem_iter;
@@ -9633,6 +9673,8 @@ static int manager_queues_status(struct mansession *s, const struct message *m)
 		/* List queue properties */
 		if (ast_strlen_zero(queuefilter) || !strcasecmp(q->name, queuefilter)) {
 			sl = ((q->callscompleted > 0) ? 100 * ((float)q->callscompletedinsl / (float)q->callscompleted) : 0);
+			sl2 = (((q->callscompleted + q->callsabandoned) > 0) ? 100 * (((float)q->callsabandonedinsl + (float)q->callscompletedinsl) / ((float)q->callsabandoned + (float)q->callscompleted)) : 0);
+
 			astman_append(s, "Event: QueueParams\r\n"
 				"Queue: %s\r\n"
 				"Max: %d\r\n"
@@ -9644,11 +9686,12 @@ static int manager_queues_status(struct mansession *s, const struct message *m)
 				"Abandoned: %d\r\n"
 				"ServiceLevel: %d\r\n"
 				"ServicelevelPerf: %2.1f\r\n"
+				"ServicelevelPerf2: %2.1f\r\n"
 				"Weight: %d\r\n"
 				"%s"
 				"\r\n",
 				q->name, q->maxlen, int2strat(q->strategy), q->count, q->holdtime, q->talktime, q->callscompleted,
-				q->callsabandoned, q->servicelevel, sl, q->weight, idText);
+				q->callsabandoned, q->servicelevel, sl, sl2, q->weight, idText);
 			++q_items;
 
 			/* List Queue Members */
@@ -10545,6 +10588,85 @@ static char *handle_queue_reload(struct ast_cli_entry *e, int cmd, struct ast_cl
 	return CLI_SUCCESS;
 }
 
+//QueueUpdate application
+static int qupd_exec(struct ast_channel *chan, const char *data)
+{
+    int oldtalktime;
+    char *parse;
+    struct call_queue *q;
+    struct member *mem;
+    int newtalktime = 0;
+
+    AST_DECLARE_APP_ARGS(args,
+			 AST_APP_ARG(queuename);
+			 AST_APP_ARG(uniqueid);
+			 AST_APP_ARG(membername);
+			 AST_APP_ARG(status);
+			 AST_APP_ARG(talktime);
+			 AST_APP_ARG(params););
+
+    if (ast_strlen_zero(data)) {
+		ast_log(LOG_WARNING, "UpdateQueue requires arguments (queuename,uniqueid,membername,status,talktime,params[totaltime,callednumber])\n");
+		return -1;
+    }
+
+    parse = ast_strdupa(data);
+
+    AST_STANDARD_APP_ARGS(args, parse);
+
+    if (ast_strlen_zero(args.queuename) || ast_strlen_zero(args.uniqueid) || ast_strlen_zero(args.membername) || ast_strlen_zero(args.status)) {
+		ast_log(LOG_WARNING, "Missing argument to UpdateQueue (queuename,uniqueid,membername,status,talktime,params[totaltime|callednumber])\n");
+		return -1;
+    }
+
+    if (!ast_strlen_zero(args.talktime)) {
+		newtalktime = atoi(args.talktime);
+    }
+
+    q = find_load_queue_rt_friendly(args.queuename);
+
+    if (q == NULL) {
+		return 0;
+    }
+
+    ao2_lock(q);
+    if (q->members) {
+		struct ao2_iterator mem_iter = ao2_iterator_init(q->members, 0);
+		while ((mem = ao2_iterator_next(&mem_iter))) {
+	    	if (!strcasecmp(mem->membername, args.membername)) {
+				if (!strcasecmp(args.status, "ANSWER"))	{
+					oldtalktime = q->talktime;
+					q->talktime = (((oldtalktime << 2) - oldtalktime) + newtalktime) >> 2;
+					time(&mem->lastcall);
+					mem->calls++;
+					mem->lastqueue = q;
+					q->callscompleted++;
+
+					if (newtalktime <= q->servicelevel)	{
+						q->callscompletedinsl++;
+					}
+				} else {
+
+					time(&mem->lastcall);
+					q->callsabandoned++;
+				}
+
+				ast_queue_log(args.queuename, args.uniqueid, args.membername, "OUTCALL", "%s|%s|%s", args.status, args.talktime, args.params);
+	    	}
+
+	    	ao2_ref(mem, -1);
+		}
+
+	ao2_iterator_destroy(&mem_iter);
+    
+	}
+	
+    ao2_unlock(q);
+    queue_t_unref(q, "Done with temporary pointer");
+
+    return 0;
+}
+
 static struct ast_cli_entry cli_queue[] = {
 	AST_CLI_DEFINE(queue_show, "Show status of a specified queue"),
 	AST_CLI_DEFINE(handle_queue_rule_show, "Show the rules defined in queuerules.conf"),
@@ -10861,6 +10983,7 @@ static int unload_module(void)
 	ast_manager_unregister("QueueRemove");
 	ast_manager_unregister("QueuePause");
 	ast_manager_unregister("QueueLog");
+	ast_manager_unregister("QueueUpdate");
 	ast_manager_unregister("QueuePenalty");
 	ast_manager_unregister("QueueReload");
 	ast_manager_unregister("QueueReset");
@@ -10870,6 +10993,7 @@ static int unload_module(void)
 	ast_unregister_application(app_pqm);
 	ast_unregister_application(app_upqm);
 	ast_unregister_application(app_ql);
+	ast_unregister_application(app_qupd);
 	ast_unregister_application(app);
 	ast_custom_function_unregister(&queueexists_function);
 	ast_custom_function_unregister(&queuevar_function);
@@ -10967,6 +11091,7 @@ static int load_module(void)
 	err |= ast_register_application_xml(app_pqm, pqm_exec);
 	err |= ast_register_application_xml(app_upqm, upqm_exec);
 	err |= ast_register_application_xml(app_ql, ql_exec);
+	err |= ast_register_application_xml(app_qupd, qupd_exec);
 	err |= ast_manager_register_xml("Queues", 0, manager_queues_show);
 	err |= ast_manager_register_xml("QueueStatus", 0, manager_queues_status);
 	err |= ast_manager_register_xml("QueueSummary", 0, manager_queues_summary);

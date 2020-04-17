@@ -727,6 +727,7 @@ struct cdr_object {
 	struct timeval end;                     /*!< When this CDR was finalized */
 	struct timeval lastevent;               /*!< The time at which the last event was created regarding this CDR */
 	unsigned int sequence;                  /*!< A monotonically increasing number for each CDR */
+	unsigned int causecode;
 	struct ast_flags flags;                 /*!< Flags on the CDR */
 	AST_DECLARE_STRING_FIELDS(
 		AST_STRING_FIELD(linkedid);         /*!< Linked ID. Cached here as it may change out from party A, which must be immutable */
@@ -1064,7 +1065,6 @@ static struct cdr_object *cdr_object_alloc(struct ast_channel_snapshot *chan, co
 	cdr->disposition = AST_CDR_NULL;
 	cdr->sequence = ast_atomic_fetchadd_int(&global_cdr_sequence, +1);
 	cdr->lastevent = *event_time;
-
 	cdr->party_a.snapshot = chan;
 	ao2_t_ref(cdr->party_a.snapshot, +1, "bump snapshot during CDR creation");
 
@@ -1330,6 +1330,7 @@ static struct ast_cdr *cdr_object_create_public_records(struct cdr_object *cdr)
 		ast_copy_string(cdr_copy->lastdata, it_cdr->data, sizeof(cdr_copy->lastdata));
 		ast_copy_string(cdr_copy->dst, it_cdr->exten, sizeof(cdr_copy->dst));
 		ast_copy_string(cdr_copy->dcontext, it_cdr->context, sizeof(cdr_copy->dcontext));
+		cdr_copy->causecode = party_a->hangupcause;
 
 		/* Party B */
 		if (party_b) {
@@ -1338,6 +1339,7 @@ static struct ast_cdr *cdr_object_create_public_records(struct cdr_object *cdr)
 			if (!ast_strlen_zero(it_cdr->party_b.userfield)) {
 				snprintf(cdr_copy->userfield, sizeof(cdr_copy->userfield), "%s;%s", it_cdr->party_a.userfield, it_cdr->party_b.userfield);
 			}
+			cdr_copy->causecode = party_b->hangupcause;
 		}
 		if (ast_strlen_zero(cdr_copy->userfield) && !ast_strlen_zero(it_cdr->party_a.userfield)) {
 			ast_copy_string(cdr_copy->userfield, it_cdr->party_a.userfield, sizeof(cdr_copy->userfield));
@@ -1355,7 +1357,6 @@ static struct ast_cdr *cdr_object_create_public_records(struct cdr_object *cdr)
 		ast_copy_string(cdr_copy->linkedid, it_cdr->linkedid, sizeof(cdr_copy->linkedid));
 		cdr_copy->disposition = it_cdr->disposition;
 		cdr_copy->sequence = it_cdr->sequence;
-
 		/* Variables */
 		copy_variables(&cdr_copy->varshead, &it_cdr->party_a.variables);
 		AST_LIST_TRAVERSE(&it_cdr->party_b.variables, it_var, entries) {
@@ -1408,6 +1409,10 @@ static void cdr_object_dispatch(struct cdr_object *cdr)
  */
 static void cdr_object_set_disposition(struct cdr_object *cdr, int hangupcause)
 {
+	RAII_VAR(struct module_config *, mod_cfg,
+			ao2_global_obj_ref(module_configs), ao2_cleanup);
+
+	cdr->causecode=hangupcause;
 	/* Change the disposition based on the hang up cause */
 	switch (hangupcause) {
 	case AST_CAUSE_BUSY:
@@ -1446,6 +1451,7 @@ static void cdr_object_set_disposition(struct cdr_object *cdr, int hangupcause)
  */
 static void cdr_object_finalize(struct cdr_object *cdr)
 {
+
 	if (!ast_tvzero(cdr->end)) {
 		return;
 	}
@@ -3100,6 +3106,8 @@ void ast_cdr_format_var(struct ast_cdr *cdr, const char *name, char **ret, char 
 		ast_copy_string(workspace, cdr->userfield, workspacelen);
 	} else if (!strcasecmp(name, "sequence")) {
 		snprintf(workspace, workspacelen, "%d", cdr->sequence);
+	} else if (!strcasecmp(name, "causecode")) {
+        snprintf(workspace, workspacelen, "%d", cdr->causecode);
 	} else if ((varbuf = cdr_format_var_internal(cdr, name))) {
 		ast_copy_string(workspace, varbuf, workspacelen);
 	} else {
@@ -3237,6 +3245,7 @@ static int cdr_object_format_property(struct cdr_object *cdr_obj, const char *na
 	struct ast_channel_snapshot *party_a = cdr_obj->party_a.snapshot;
 	struct ast_channel_snapshot *party_b = cdr_obj->party_b.snapshot;
 
+
 	if (!strcasecmp(name, "clid")) {
 		ast_callerid_merge(value, length, party_a->caller_name, party_a->caller_number, "");
 	} else if (!strcasecmp(name, "src")) {
@@ -3287,6 +3296,8 @@ static int cdr_object_format_property(struct cdr_object *cdr_obj, const char *na
 		ast_copy_string(value, cdr_obj->party_a.userfield, length);
 	} else if (!strcasecmp(name, "sequence")) {
 		snprintf(value, length, "%u", cdr_obj->sequence);
+    } else if (!strcasecmp(name, "causecode")) {
+        snprintf(value, length, "%u", cdr_obj->causecode);
 	} else {
 		return 1;
 	}

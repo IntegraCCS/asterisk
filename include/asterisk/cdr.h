@@ -318,7 +318,8 @@ struct ast_cdr {
 	char userfield[AST_MAX_USER_FIELD];
 	/*! Sequence field */
 	int sequence;
-
+	/*! Hangup Cause field */
+	int causecode;
 	/*! A linked list for variables */
 	struct varshead varshead;
 
