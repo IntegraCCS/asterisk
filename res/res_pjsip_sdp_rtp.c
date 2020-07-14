@@ -1319,8 +1319,7 @@ static int create_outgoing_sdp_stream(struct ast_sip_session *session, struct as
 
 	if (direct_media_enabled) {
 		ast_format_cap_get_compatible(session->endpoint->media.codecs, session->direct_media_cap, caps);
-	} else if (!ast_format_cap_count(session->req_caps) ||
-		!ast_format_cap_iscompatible(session->req_caps, session->endpoint->media.codecs)) {
+	} else if (!ast_format_cap_count(session->req_caps)) {
 		ast_format_cap_append_from_cap(caps, session->endpoint->media.codecs, media_type);
 	} else {
 		ast_format_cap_append_from_cap(caps, session->req_caps, media_type);
@@ -1604,8 +1603,8 @@ static void change_outgoing_sdp_stream_media_address(pjsip_tx_data *tdata, struc
 	if (ast_sip_transport_is_nonlocal(transport_state, &our_sdp_addr) && transport_state->localnet) {
 		return;
 	}
-	ast_debug(5, "Setting media address to %s\n", ast_sockaddr_stringify_host(&transport_state->external_media_address));
-	pj_strdup2(tdata->pool, &stream->conn->addr, ast_sockaddr_stringify_host(&transport_state->external_media_address));
+	ast_debug(5, "Setting media address to %s\n", ast_sockaddr_stringify_addr_remote(&transport_state->external_media_address));
+	pj_strdup2(tdata->pool, &stream->conn->addr, ast_sockaddr_stringify_addr_remote(&transport_state->external_media_address));
 }
 
 /*! \brief Function which stops the RTP instance */

@@ -26,6 +26,7 @@
 #define _ASTERISK_LOGGER_H
 
 #include "asterisk/options.h"	/* need option_debug */
+#include "asterisk/inline_api.h"
 
 #if defined(__cplusplus) || defined(c_plusplus)
 extern "C" {
@@ -230,6 +231,17 @@ void ast_console_toggle_loglevel(int fd, int level, int state);
 #undef AST_LOG_DEBUG
 #endif
 #define AST_LOG_DEBUG      __LOG_DEBUG, _A_
+
+#ifdef LOG_TRACE
+#undef LOG_TRACE
+#endif
+#define __LOG_TRACE   1
+#define LOG_TRACE     __LOG_TRACE, _A_
+
+#ifdef AST_LOG_TRACE
+#undef AST_LOG_TRACE
+#endif
+#define AST_LOG_TRACE     __LOG_TRACE, _A_
 
 #ifdef LOG_NOTICE
 #undef LOG_NOTICE
@@ -542,6 +554,69 @@ void ast_logger_set_queue_limit(int queue_limit);
  * \return Queue limit
  */
 int ast_logger_get_queue_limit(void);
+
+/*!
+ \page Scope_Trace Scope Trace
+
+Scope tracing is not available in this version of Asterisk.
+The declatrations and stubs below are there to facilitate
+cherry-picking from branches where it is available.
+
+ */
+
+/*!
+ * \brief Get the trace level for a module
+ * \param module the name of module
+ * \return the trace level
+ */
+AST_INLINE_API(
+unsigned int ast_trace_get_by_module(const char *module),
+{
+	return 0;
+}
+)
+
+#define TRACE_ATLEAST(level) (0)
+
+/*!
+ * \brief Controls if and when indenting is applied.
+ */
+enum ast_trace_indent_type {
+	/*! Use the existing indent level */
+	AST_TRACE_INDENT_SAME = 0,
+	/*! Increment the indent before printing the message */
+	AST_TRACE_INDENT_INC_BEFORE,
+	/*! Increment the indent after printing the message */
+	AST_TRACE_INDENT_INC_AFTER,
+	/*! Decrement the indent before printing the message */
+	AST_TRACE_INDENT_DEC_BEFORE,
+	/*! Decrement the indent after printing the message */
+	AST_TRACE_INDENT_DEC_AFTER,
+	/*! Set the indent to the one provided */
+	AST_TRACE_INDENT_PROVIDED,
+	/*! Don't use or alter the level */
+	AST_TRACE_INDENT_NONE,
+};
+
+/*
+ * The "#if 1" keeps the last few lines of scope tracing
+ * common to all branches.
+ */
+#if 1
+#define ast_trace_raw(__level, __indent_type, ...)
+#define ast_trace(__level, ...)
+#define ast_trace_get_indent() (0)
+#define ast_trace_set_indent(indent)
+#define ast_trace_inc_indent()
+#define ast_trace_dec_indent()
+#define SCOPE_TRACE(__level, ...)
+#define SCOPE_ENTER(level, ...)
+#define SCOPE_ENTER_TASK(level, indent, ...)
+#define SCOPE_EXIT(...)
+#define SCOPE_EXIT_EXPR(__expr, ...) __expr
+#define SCOPE_EXIT_RTN(...) return
+#define SCOPE_EXIT_RTN_VALUE(__return_value, ...) return __return_value
+#endif
 
 #if defined(__cplusplus) || defined(c_plusplus)
 }
