@@ -5545,9 +5545,6 @@ static int update_queue(struct call_queue *q, struct member *member, int callcom
 			ao2_lock(qtmp);
 			if ((mem = ao2_find(qtmp->members, member, OBJ_POINTER))) {
 				time(&mem->lastcall);
-				mem->calls++;
-				mem->callcompletedinsl = 0;
-				mem->starttime = 0;
 				mem->lastqueue = q;
 				ao2_ref(mem, -1);
 			}
@@ -5555,15 +5552,16 @@ static int update_queue(struct call_queue *q, struct member *member, int callcom
 			queue_t_unref(qtmp, "Done with iterator");
 		}
 		ao2_iterator_destroy(&queue_iter);
-	} else {
-		ao2_lock(q);
-		time(&member->lastcall);
-		member->callcompletedinsl = 0;
-		member->calls++;
-		member->starttime = 0;
-		member->lastqueue = q;
-		ao2_unlock(q);
 	}
+	
+	ao2_lock(q);
+	time(&member->lastcall);
+	member->callcompletedinsl = 0;
+	member->calls++;
+	member->starttime = 0;
+	member->lastqueue = q;
+	ao2_unlock(q);
+	
 	/* Member might never experience any direct status change (local
 	 * channel with forwarding in particular). If that's the case,
 	 * this is the last chance to remove it from pending or subsequent
