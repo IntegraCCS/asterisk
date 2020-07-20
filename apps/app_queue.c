@@ -1533,6 +1533,7 @@ struct member {
 	unsigned int delme:1;                /*!< Flag to delete entry on reload */
 	char rt_uniqueid[80];                /*!< Unique id of realtime member entry */
 	unsigned int ringinuse:1;            /*!< Flag to ring queue members even if their status is 'inuse' */
+	unsigned int finishwrapup:2;
 };
 
 enum empty_conditions {
@@ -2201,7 +2202,7 @@ static struct ast_json *queue_member_blob_create(struct call_queue *q, struct me
 		"Interface", mem->interface,
 		"StateInterface", mem->state_interface,
 		"Membership", (mem->dynamic ? "dynamic" : (mem->realtime ? "realtime" : "static")),
-		"Penalty", mem->penalty,
+		"Penalty", mem->finishwrapup,
 		"CallsTaken", mem->calls,
 		"LastCall", (int)mem->lastcall,
 		"InCall", mem->starttime ? 1 : 0,
@@ -2268,7 +2269,7 @@ static int get_member_status(struct call_queue *q, int max_penalty, int min_pena
 			if (member->paused && (conditions & QUEUE_EMPTY_PAUSED)) {
 				ast_debug(4, "%s is unavailable because he is paused'\n", member->membername);
 				break;
-			} else if ((conditions & QUEUE_EMPTY_WRAPUP) && member->lastcall && q->wrapuptime && (time(NULL) - q->wrapuptime < member->lastcall)) {
+			} else if ((conditions & QUEUE_EMPTY_WRAPUP) && member->lastcall && q->wrapuptime && (time(NULL) - q->wrapuptime < member->lastcall) && member->finishwrapup == 0) {
 				ast_debug(4, "%s is unavailable because it has only been %d seconds since his last call (wrapup time is %d)\n", member->membername, (int) (time(NULL) - member->lastcall), q->wrapuptime);
 				break;
 			} else {
@@ -2419,8 +2420,13 @@ static int is_member_available(struct call_queue *q, struct member *mem)
 
 	/* Let wrapuptimes override device state availability */
 	if (mem->lastcall && q->wrapuptime && (time(NULL) - q->wrapuptime < mem->lastcall)) {
-		available = 0;
+		if (mem->status == AST_DEVICE_NOT_INUSE && mem->finishwrapup == 1) {
+			available = 1;
+		} else {
+			available = 0;
+		}
 	}
+    ast_debug(1,"AGENT %s Available? %d FINISHWRAPUP %d\n", mem->membername, available, mem->finishwrapup);
 	return available;
 }
 
@@ -3284,6 +3290,7 @@ static void rt_handle_member_record(struct call_queue *q, char *category, struct
 	int paused  = 0;
 	int found = 0;
 	int ringinuse = q->ringinuse;
+	int finishwrapup = 0;
 
 	const char *config_val;
 	const char *interface = ast_variable_retrieve(member_config, category, "interface");
@@ -3292,6 +3299,8 @@ static void rt_handle_member_record(struct call_queue *q, char *category, struct
 	const char *state_interface = S_OR(ast_variable_retrieve(member_config, category, "state_interface"), interface);
 	const char *penalty_str = ast_variable_retrieve(member_config, category, "penalty");
 	const char *paused_str = ast_variable_retrieve(member_config, category, "paused");
+	const char *finishwrapup_str = ast_variable_retrieve(member_config, category, "finishwrapup");
+
 
 	if (ast_strlen_zero(rt_uniqueid)) {
 		ast_log(LOG_WARNING, "Realtime field 'uniqueid' is empty for member %s\n",
@@ -3321,6 +3330,13 @@ static void rt_handle_member_record(struct call_queue *q, char *category, struct
 		}
 	}
 
+	if (finishwrapup_str) {
+		finishwrapup = atoi(finishwrapup_str);
+		if (finishwrapup < 0) {
+			finishwrapup = 0;
+		}
+	}
+
 	if ((config_val = ast_variable_retrieve(member_config, category, realtime_ringinuse_field))) {
 		if (ast_true(config_val)) {
 			ringinuse = 1;
@@ -3347,6 +3363,7 @@ static void rt_handle_member_record(struct call_queue *q, char *category, struct
 			}
 			m->penalty = penalty;
 			m->ringinuse = ringinuse;
+			m->finishwrapup = finishwrapup;
 			found = 1;
 			ao2_ref(m, -1);
 			break;
@@ -4273,6 +4290,9 @@ static int can_ring_entry(struct queue_ent *qe, struct callattempt *call)
 		ast_debug(1, "Wrapuptime not yet expired on queue %s for %s\n",
 			(memberp->lastqueue ? memberp->lastqueue->name : qe->parent->name),
 			call->interface);
+		if (call->member->finishwrapup == 1 && call->member->status == AST_DEVICE_NOT_INUSE ) {
+			return 1;
+		}
 		return 0;
 	}
 
@@ -6252,6 +6272,8 @@ static void handle_hangup(void *userdata, struct stasis_subscription *sub,
 	ast_debug(3, "Detected hangup of queue %s channel %s\n", reason == CALLER ? "caller" : "member",
 			channel_blob->snapshot->name);
 
+	ast_update_realtime("queue_members", "membername", queue_data->member->membername, "finishwrapup", "0", SENTINEL);
+
 	ast_queue_log(queue_data->queue->name, queue_data->caller_uniqueid, queue_data->member->membername,
 			reason == CALLER ? "COMPLETECALLER" : "COMPLETEAGENT", "%ld|%ld|%d",
 		(long) (queue_data->starttime - queue_data->holdstart),
@@ -6989,6 +7011,7 @@ static int try_calling(struct queue_ent *qe, struct ast_flags opts, char **opt_a
 		}
 		qe->handled++;
 
+		ast_update_realtime("queue_members", "membername", member->membername, "finishwrapup", "2", SENTINEL);
 		ast_queue_log(queuename, ast_channel_uniqueid(qe->chan), member->membername, "CONNECT", "%ld|%s|%ld", (long) (time(NULL) - qe->start), ast_channel_uniqueid(peer),
 													(long)(orig - to > 0 ? (orig - to) / 1000 : 0));
 
@@ -9691,6 +9714,7 @@ static int manager_queues_status(struct mansession *s, const struct message *m)
 	queue_iter = ao2_iterator_init(queues, 0);
 	while ((q = ao2_t_iterator_next(&queue_iter, "Iterate through queues"))) {
 		ao2_lock(q);
+		update_realtime_members(q);
 
 		/* List queue properties */
 		if (ast_strlen_zero(queuefilter) || !strcasecmp(q->name, queuefilter)) {
@@ -9736,7 +9760,7 @@ static int manager_queues_status(struct mansession *s, const struct message *m)
 						"%s"
 						"\r\n",
 						q->name, mem->membername, mem->interface, mem->state_interface, mem->dynamic ? "dynamic" : "static",
-						mem->penalty, mem->calls, (int)mem->lastcall, mem->starttime ? 1 : 0, mem->status,
+						mem->finishwrapup, mem->calls, (int)mem->lastcall, mem->starttime ? 1 : 0, mem->status,
 						mem->paused, mem->reason_paused, idText);
 					++q_items;
 				}
@@ -10663,6 +10687,7 @@ static int qupd_exec(struct ast_channel *chan, const char *data)
 					mem->calls++;
 					mem->lastqueue = q;
 					q->callscompleted++;
+					mem->finishwrapup = 0;
 
 					if (newtalktime <= q->servicelevel)	{
 						q->callscompletedinsl++;
@@ -10672,7 +10697,7 @@ static int qupd_exec(struct ast_channel *chan, const char *data)
 					time(&mem->lastcall);
 					q->callsabandoned++;
 				}
-
+				ast_update_realtime("queue_members", "membername", args.membername, "finishwrapup", "0", SENTINEL);
 				ast_queue_log(args.queuename, args.uniqueid, args.membername, "OUTCALL", "%s|%s|%s", args.status, args.talktime, args.params);
 	    	}
 
